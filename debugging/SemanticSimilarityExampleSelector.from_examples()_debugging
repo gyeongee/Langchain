@@ -1,0 +1,139 @@
+1. 처음 발생한 오류
+
+SemanticSimilarityExampleSelector.from_examples()를 실행했을 때 Jupyter 커널이 종료되는 문제가 발생했습니다.
+
+```
+example_selector = SemanticSimilarityExampleSelector.from_examples(
+    examples,
+    OpenAIEmbeddings(),
+    Chroma,
+    k=1,
+)
+```
+
+처음에는 코드 자체에 문제가 있는 것처럼 보였지만, 실행 과정에서 Chroma가 임베딩을 생성하고 저장하는 과정에서 문제가 발생하는 것으로 범위를 좁혔습니다.
+
+
+2. from_examples() 내부 동작 확인
+
+from_examples()는 내부적으로 예제 데이터를 벡터화해서 Vector Store에 저장합니다.
+
+대략적으로:
+
+> SemanticSimilarityExampleSelector.from_examples()
+                ↓
+        Chroma Vector Store 생성
+                ↓
+          예제 텍스트 임베딩
+                ↓
+          벡터 저장
+
+따라서 단순히 from_examples()만 문제가 있다고 생각하지 않고 각각의 구성 요소를 따로 테스트했습니다.
+
+3. OpenAI Embedding 자체는 정상적으로 동작했습니다.
+
+또한 OpenAI SDK도 정상적으로 동작했습니다.
+
+따라서:
+
+> OpenAI API
+   ↓
+Embedding 생성
+   ↓
+정상
+
+임을 확인했습니다.
+
+4. embed_documents() 테스트
+
+이번에는 여러 문서를 임베딩하는:
+```
+embeddings.embed_documents(["안녕하세요"])
+```
+를 실행했는데 처음에는 커널이 종료되었습니다.
+
+그래서 OpenAIEmbeddings의 context length 관련 옵션을 변경했습니다.
+```
+embeddings = OpenAIEmbeddings(
+    model="text-embedding-3-small",
+    check_embedding_ctx_length=False
+)
+```
+그 후,정상적으로 동작했습니다.
+
+또한 실제 examples의 질문/답변 데이터도 임베딩해봤고 정상적으로 처리됐습니다.
+
+따라서 examples 데이터가 너무 길어서 발생한 문제도 아니었습니다.
+
+5. Chroma만 따로 테스트
+
+이번에는 LangChain을 거치지 않고 Chroma 자체를 테스트했습니다.
+```
+import chromadb
+
+client = chromadb.Client()
+
+collection = client.create_collection(
+    name="test_collection_direct"
+)
+```
+이 과정에서 다음 오류가 발생했습니다.
+```
+ValueError:
+The onnxruntime python package is not installed.
+Please install it with pip install onnxruntime
+```
+여기서 중요한 단서를 발견했습니다.
+
+Chroma가 기본 Embedding Function을 사용하고 있었음
+
+직접 chromadb.Client()를 사용할 경우 Chroma가 기본적으로 ONNX 기반 임베딩 함수를 사용하려고 합니다.
+
+따라서 onnxruntime이 필요합니다.
+
+6. onnxruntime 설치
+
+다음 명령으로 설치했습니다.
+
+```pip install onnxruntime```
+
+
+
+7. import onnxruntime을 직접 테스트
+
+그래서 가장 중요한 테스트를 했습니다.
+
+```import onnxruntime```
+
+그런데 다음 오류가 발생했습니다.
+
+>ImportError:
+DLL load failed while importing onnxruntime_pybind11_state:
+DLL 초기화 루틴을 실행할 수 없습니다.
+
+여기서 문제의 성격이 완전히 바뀌었습니다.
+
+onnxruntime 설치가 안된 것이 아니라, 설치가 되었지만  Windows가 onnxruntime의 DLL을 로드하지 못하고 있다는 것을 알게되었습니다.(python 환경이 서로 달라 발생한 문제는 아니었습니다.)
+
+
+
+9. NumPy 문제인지 확인
+
+당시 환경에서:
+
+```import numpy
+print(numpy.__version__)
+```
+결과가:
+
+NumPy: 2.4.6이었습니다.
+
+그래서 혹시 NumPy와 ONNX Runtime의 호환성 문제일 가능성을 배제하기 위해,
+
+```pip install "numpy<2"``` 로 NumPy를 1.x 계열로 낮춰 테스트했습니다.
+
+하지만 똑같은 DLL 오류가 발생했습니다. NumPy 버전 문제는 아니었습니다.
+
+10. 최종 원인
+
+결국, Windows에서 onnxruntime 네이티브 DLL 초기화 실패로 오류가 발생하였고 해결을 위해, **Microsoft Visual C++ Redistributable을 설치/업데이트**했습니다.
